@@ -1,0 +1,10 @@
+node_modules/
+dist/
+lambda/dist/
+lambda/node_modules/
+.env.local
+.env.*.local
+*.vsix
+.aws-sam/
+samconfig.toml
+*.js.map

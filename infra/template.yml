@@ -1,0 +1,367 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Fulcrum GitHub Repository Activity — S3 + CloudFront + Cognito + Lambda API
+
+# ── Parameters ────────────────────────────────────────────────────────────────
+
+Parameters:
+  AppName:
+    Type: String
+    Default: fulcrum-github-repo-activity
+    Description: Logical name used for resource naming and tagging.
+
+  CustomDomain:
+    Type: String
+    Default: ''
+    Description: Optional custom domain (e.g. repo-activity.example.com). Leave blank to use the CloudFront *.cloudfront.net domain.
+
+  HostedZoneId:
+    Type: String
+    Default: ''
+    Description: Route 53 Hosted Zone ID. Required when CustomDomain is set.
+
+  AcmCertificateArn:
+    Type: String
+    Default: ''
+    Description: >
+      ARN of an ACM certificate in us-east-1 for the CustomDomain.
+      CloudFront requires the certificate to be in us-east-1.
+      Create it manually in that region, then pass the ARN here.
+
+  GitHubAppId:
+    Type: String
+    Description: Numeric GitHub App ID (shown on your App's settings page).
+
+  GitHubAppPrivateKey:
+    Type: String
+    NoEcho: true
+    Default: PLACEHOLDER
+    Description: >
+      GitHub App private key in PEM format (newlines as \n).
+      You can leave this as PLACEHOLDER and update the Secrets Manager
+      secret manually after the first deploy (see github-app-setup.md).
+
+# ── Conditions ────────────────────────────────────────────────────────────────
+
+Conditions:
+  HasCustomDomain: !Not [!Equals [!Ref CustomDomain, '']]
+  HasHostedZone:
+    !And
+      - !Condition HasCustomDomain
+      - !Not [!Equals [!Ref HostedZoneId, '']]
+  HasCertificate: !Not [!Equals [!Ref AcmCertificateArn, '']]
+
+# ── Globals ───────────────────────────────────────────────────────────────────
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 30
+    MemorySize: 256
+    Architectures: [arm64]
+
+# ── Resources ─────────────────────────────────────────────────────────────────
+
+Resources:
+
+  # ── Secrets Manager: GitHub App credentials ──────────────────────────────
+
+  GitHubAppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '/${AppName}/github-app'
+      Description: GitHub App credentials — appId (string) + privateKey (PEM with \n escaped)
+      SecretString: !Sub '{"appId":"${GitHubAppId}","privateKey":"${GitHubAppPrivateKey}"}'
+
+  # ── Cognito User Pool ─────────────────────────────────────────────────────
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${AppName}-users'
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub '${AppName}-${AWS::AccountId}'
+      UserPoolId: !Ref UserPool
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub '${AppName}-spa'
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_REFRESH_TOKEN_AUTH
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+      SupportedIdentityProviders:
+        - COGNITO
+      CallbackURLs:
+        - !If
+          - HasCustomDomain
+          - !Sub 'https://${CustomDomain}/'
+          - 'http://localhost:3000/'
+      LogoutURLs:
+        - !If
+          - HasCustomDomain
+          - !Sub 'https://${CustomDomain}/'
+          - 'http://localhost:3000/'
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      AccessTokenValidity: 8
+      IdTokenValidity: 8
+      RefreshTokenValidity: 30
+
+  # ── HTTP API Gateway ──────────────────────────────────────────────────────
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Name: !Sub '${AppName}-api'
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            JwtConfiguration:
+              issuer: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}'
+              audience:
+                - !Ref UserPoolClient
+            IdentitySource: '$request.header.Authorization'
+      CorsConfiguration:
+        AllowOrigins:
+          - !If [HasCustomDomain, !Sub 'https://${CustomDomain}', 'http://localhost:3000']
+        AllowHeaders:
+          - Authorization
+          - Content-Type
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        MaxAge: 300
+
+  # ── Lambda function ───────────────────────────────────────────────────────
+
+  GitHubApiFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: false
+        EntryPoints:
+          - src/handler.ts
+        # Exclude @aws-sdk/* — they are provided by the Lambda runtime
+        External:
+          - '@aws-sdk/client-secrets-manager'
+    Properties:
+      FunctionName: !Sub '${AppName}-api'
+      Handler: handler.handler
+      CodeUri: ../lambda/
+      Environment:
+        Variables:
+          GITHUB_APP_SECRET_ARN: !Ref GitHubAppSecret
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref GitHubAppSecret
+      Events:
+        # Route all /api/* requests through the JWT-protected HTTP API
+        ApiEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /api/{proxy+}
+            Method: ANY
+
+  # ── S3 bucket ─────────────────────────────────────────────────────────────
+
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AppName}-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AppName}-oac'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${WebsiteBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
+
+  # ── CloudFront ────────────────────────────────────────────────────────────
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    DependsOn: WebsiteBucketPolicy
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Comment: !Sub '${AppName}'
+
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt WebsiteBucket.RegionalDomainName
+            OriginAccessControlId: !Ref OriginAccessControl
+            S3OriginConfig: {}
+
+          - Id: ApiOrigin
+            DomainName: !Sub '${HttpApi}.execute-api.${AWS::Region}.amazonaws.com'
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          # CachingOptimized
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+
+        CacheBehaviors:
+          # Vite-generated hashed assets — cache forever
+          - PathPattern: '/assets/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            AllowedMethods: [GET, HEAD]
+
+          # Lambda API — no cache, forward Authorization header
+          - PathPattern: '/api/*'
+            TargetOriginId: ApiOrigin
+            ViewerProtocolPolicy: https-only
+            # CachingDisabled
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            # AllViewerExceptHostHeader (forwards Authorization + query strings)
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD]
+
+        # SPA fallback: S3 returns 403 for missing paths → serve index.html
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+
+        Aliases: !If [HasCustomDomain, [!Ref CustomDomain], !Ref 'AWS::NoValue']
+
+        ViewerCertificate: !If
+          - HasCertificate
+          - AcmCertificateArn: !Ref AcmCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+
+  # ── Route 53 DNS ──────────────────────────────────────────────────────────
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasHostedZone
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref CustomDomain
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront global hosted zone (constant)
+        EvaluateTargetHealth: false
+
+# ── Outputs ───────────────────────────────────────────────────────────────────
+
+Outputs:
+  SiteUrl:
+    Description: Application URL
+    Value: !If
+      - HasCustomDomain
+      - !Sub 'https://${CustomDomain}'
+      - !Sub 'https://${CloudFrontDistribution.DomainName}'
+
+  CloudFrontDistributionId:
+    Description: CloudFront distribution ID (used for cache invalidation on deploy)
+    Value: !Ref CloudFrontDistribution
+
+  WebsiteBucketName:
+    Description: S3 bucket name for the SPA
+    Value: !Ref WebsiteBucket
+
+  UserPoolId:
+    Description: Cognito User Pool ID — set as VITE_USER_POOL_ID in the SPA build
+    Value: !Ref UserPool
+
+  UserPoolClientId:
+    Description: Cognito App Client ID — set as VITE_USER_POOL_CLIENT_ID in the SPA build
+    Value: !Ref UserPoolClient
+
+  CognitoDomain:
+    Description: Cognito Hosted UI domain — set as VITE_COGNITO_DOMAIN in the SPA build
+    Value: !Sub '${AppName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com'
+
+  ApiEndpoint:
+    Description: API Gateway base URL — use as VITE_API_URL for local dev proxy
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com'
+
+  GitHubAppSecretArn:
+    Description: Secrets Manager ARN — update this secret with your real GitHub App private key
+    Value: !Ref GitHubAppSecret
