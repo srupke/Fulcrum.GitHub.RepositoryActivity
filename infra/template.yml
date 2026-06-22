@@ -41,6 +41,58 @@ Parameters:
       You can leave this as PLACEHOLDER and update the Secrets Manager
       secret manually after the first deploy (see github-app-setup.md).
 
+  # ── SSO: SAML 2.0 ────────────────────────────────────────────────────────
+  # Leave SamlMetadataUrl empty to disable SAML. See infra/cognito-sso-setup.md.
+
+  SamlProviderName:
+    Type: String
+    Default: CompanySSO
+    Description: Display name for the SAML identity provider in Cognito (e.g. "Okta", "AzureAD").
+
+  SamlMetadataUrl:
+    Type: String
+    Default: ''
+    Description: >
+      URL to the SAML 2.0 metadata XML provided by your IdP.
+      Examples: Okta — App → Sign On → Identity Provider metadata URL.
+                Azure AD — Enterprise App → Single sign-on → App Federation Metadata Url.
+      Leave empty to disable SAML.
+
+  SamlEmailAttribute:
+    Type: String
+    Default: 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress'
+    Description: >
+      SAML attribute name that carries the user's email address.
+      Default works for Azure AD and Okta. Adjust if your IdP uses a different name (e.g. "email").
+
+  # ── SSO: OIDC / OAuth 2.0 ─────────────────────────────────────────────────
+  # Leave OidcIssuerUrl empty to disable OIDC. See infra/cognito-sso-setup.md.
+
+  OidcProviderName:
+    Type: String
+    Default: CompanyOIDC
+    Description: Display name for the OIDC identity provider in Cognito.
+
+  OidcIssuerUrl:
+    Type: String
+    Default: ''
+    Description: >
+      OIDC issuer / discovery URL (without /.well-known/openid-configuration).
+      Examples: Azure AD — https://login.microsoftonline.com/{tenantId}/v2.0
+                Okta     — https://{yourOktaDomain}/oauth2/default
+      Leave empty to disable OIDC.
+
+  OidcClientId:
+    Type: String
+    Default: ''
+    Description: Client ID registered with the OIDC provider.
+
+  OidcClientSecret:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: Client secret registered with the OIDC provider.
+
 # ── Conditions ────────────────────────────────────────────────────────────────
 
 Conditions:
@@ -50,6 +102,8 @@ Conditions:
       - !Condition HasCustomDomain
       - !Not [!Equals [!Ref HostedZoneId, '']]
   HasCertificate: !Not [!Equals [!Ref AcmCertificateArn, '']]
+  HasSamlProvider: !Not [!Equals [!Ref SamlMetadataUrl, '']]
+  HasOidcProvider: !Not [!Equals [!Ref OidcIssuerUrl, '']]
 
 # ── Globals ───────────────────────────────────────────────────────────────────
 
@@ -99,9 +153,47 @@ Resources:
       Domain: !Sub '${AppName}-${AWS::AccountId}'
       UserPoolId: !Ref UserPool
 
+  # ── SAML identity provider (created only when SamlMetadataUrl is provided) ─
+
+  SamlIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Condition: HasSamlProvider
+    Properties:
+      UserPoolId: !Ref UserPool
+      ProviderName: !Ref SamlProviderName
+      ProviderType: SAML
+      ProviderDetails:
+        MetadataURL: !Ref SamlMetadataUrl
+        IDPSignout: 'false'
+      AttributeMapping:
+        # Map IdP email attribute → Cognito email attribute
+        email: !Ref SamlEmailAttribute
+
+  # ── OIDC identity provider (created only when OidcIssuerUrl is provided) ───
+
+  OidcIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Condition: HasOidcProvider
+    Properties:
+      UserPoolId: !Ref UserPool
+      ProviderName: !Ref OidcProviderName
+      ProviderType: OIDC
+      ProviderDetails:
+        client_id: !Ref OidcClientId
+        client_secret: !Ref OidcClientSecret
+        attributes_request_method: GET
+        oidc_issuer: !Ref OidcIssuerUrl
+        authorize_scopes: 'openid email profile'
+      AttributeMapping:
+        email: email
+        name: name
+
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
-    DependsOn: UserPoolDomain
+    # DependsOn ensures IdP resources exist before the client references them.
+    # CloudFormation ignores entries that reference non-existent conditional resources.
+    DependsOn:
+      - UserPoolDomain
     Properties:
       UserPoolId: !Ref UserPool
       ClientName: !Sub '${AppName}-spa'
@@ -116,7 +208,12 @@ Resources:
         - profile
       AllowedOAuthFlowsUserPoolClient: true
       SupportedIdentityProviders:
+        # Local Cognito accounts (email + password) are always enabled.
         - COGNITO
+        # SSO providers are included only when configured.
+        # AWS::NoValue removes the entry entirely when the condition is false.
+        - !If [HasSamlProvider, !Ref SamlIdentityProvider, !Ref 'AWS::NoValue']
+        - !If [HasOidcProvider, !Ref OidcIdentityProvider, !Ref 'AWS::NoValue']
       CallbackURLs:
         - !If
           - HasCustomDomain
