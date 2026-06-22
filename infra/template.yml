@@ -139,6 +139,9 @@ Resources:
         - email
       AutoVerifiedAttributes:
         - email
+      MfaConfiguration: 'ON'
+      EnabledMfas:
+        - SOFTWARE_TOKEN_MFA
       Policies:
         PasswordPolicy:
           MinimumLength: 8
@@ -341,7 +344,6 @@ Resources:
 
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
-    DependsOn: WebsiteBucketPolicy
     Properties:
       DistributionConfig:
         Enabled: true
