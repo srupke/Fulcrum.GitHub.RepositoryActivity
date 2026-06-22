@@ -39,12 +39,26 @@
   .\deploy.ps1 -SkipBuild
 #>
 param(
-  [string]$AppName        = 'fulcrum-github-repo-activity',
-  [string]$GitHubAppId    = '',
-  [string]$CustomDomain   = '',
-  [string]$HostedZoneId   = '',
+  [string]$AppName           = 'fulcrum-github-repo-activity',
+  [string]$GitHubAppId       = '',
+  [string]$CustomDomain      = '',
+  [string]$HostedZoneId      = '',
   [string]$AcmCertificateArn = '',
-  [string]$AwsRegion      = 'us-east-1',
+  [string]$AwsRegion         = 'us-east-1',
+
+  # ── SAML SSO (optional) ──────────────────────────────────────────────────
+  # Example: -SamlMetadataUrl https://okta.com/app/.../sso/saml/metadata
+  [string]$SamlProviderName    = 'CompanySSO',
+  [string]$SamlMetadataUrl     = '',
+  [string]$SamlEmailAttribute  = 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress',
+
+  # ── OIDC SSO (optional) ──────────────────────────────────────────────────
+  # Example: -OidcIssuerUrl https://login.microsoftonline.com/{tenant}/v2.0
+  [string]$OidcProviderName  = 'CompanyOIDC',
+  [string]$OidcIssuerUrl     = '',
+  [string]$OidcClientId      = '',
+  [string]$OidcClientSecret  = '',
+
   [switch]$SkipBuild
 )
 
@@ -77,6 +91,19 @@ if (-not $SkipBuild) {
   if ($CustomDomain)       { $params += "CustomDomain=$CustomDomain" }
   if ($HostedZoneId)       { $params += "HostedZoneId=$HostedZoneId" }
   if ($AcmCertificateArn)  { $params += "AcmCertificateArn=$AcmCertificateArn" }
+
+  # SSO parameters — only forwarded when non-empty
+  if ($SamlMetadataUrl)    {
+    $params += "SamlProviderName=$SamlProviderName"
+    $params += "SamlMetadataUrl=$SamlMetadataUrl"
+    $params += "SamlEmailAttribute=$SamlEmailAttribute"
+  }
+  if ($OidcIssuerUrl)      {
+    $params += "OidcProviderName=$OidcProviderName"
+    $params += "OidcIssuerUrl=$OidcIssuerUrl"
+    $params += "OidcClientId=$OidcClientId"
+    $params += "OidcClientSecret=$OidcClientSecret"
+  }
 
   Log "Deploying CloudFormation stack '$AppName'…"
   sam deploy @params

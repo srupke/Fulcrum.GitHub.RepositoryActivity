@@ -16,7 +16,7 @@ CloudFront
                                validation
 ```
 
-**Authentication:** AWS Cognito Hosted UI (admin-created user accounts — no self-service sign-up).  
+**Authentication:** AWS Cognito Hosted UI. Supports local email/password accounts (admin-created) and/or company SSO via **SAML 2.0** (Okta, Azure AD, ADFS) or **OIDC** (Azure AD, Okta). Both can be active simultaneously.  
 **GitHub access:** A GitHub App with read permissions on repositories. The private key is stored in AWS Secrets Manager. No user-level PATs or OAuth tokens.
 
 ## Features
@@ -74,6 +74,26 @@ With a custom domain (ACM certificate must be in **us-east-1** regardless of dep
 
 After deploy, update the GitHub App private key in Secrets Manager — see [infra/github-app-setup.md](infra/github-app-setup.md).
 
+### With company SSO (optional)
+
+SAML and OIDC providers are opt-in — omit these parameters and only local accounts are used.
+
+```powershell
+# SAML (Okta, Azure AD enterprise app, ADFS, Ping…)
+.\deploy.ps1 -GitHubAppId 12345 `
+  -SamlMetadataUrl 'https://your-idp.example.com/metadata' `
+  -SamlProviderName 'CompanySSO'
+
+# OIDC (Azure AD modern, Okta, Auth0…)
+.\deploy.ps1 -GitHubAppId 12345 `
+  -OidcIssuerUrl 'https://login.microsoftonline.com/{tenant}/v2.0' `
+  -OidcClientId 'your-client-id' `
+  -OidcClientSecret 'your-client-secret' `
+  -OidcProviderName 'AzureAD'
+```
+
+See [infra/cognito-sso-setup.md](infra/cognito-sso-setup.md) for what your IT team needs to configure on the IdP side.
+
 ### Subsequent deploys (SPA changes only)
 
 ```powershell
@@ -83,6 +103,9 @@ After deploy, update the GitHub App private key in Secrets Manager — see [infr
 ## Project Structure
 
 ```
+├── .vscode/
+│   ├── launch.json         F5 launch configs (Mock and Live modes)
+│   └── tasks.json          VS Code tasks (start server, build)
 ├── src/                    React SPA (Vite + TypeScript + Tailwind CSS)
 │   ├── api/github-api.ts   API client + mock client
 │   ├── hub/Hub.tsx         Main UI component
@@ -95,7 +118,8 @@ After deploy, update the GitHub App private key in Secrets Manager — see [infr
 ├── infra/
 │   ├── template.yml        SAM template (Cognito + Lambda + API GW + S3 + CloudFront)
 │   ├── deploy.ps1          One-command deployment script
-│   └── github-app-setup.md  GitHub App creation and installation guide
+│   ├── github-app-setup.md  GitHub App creation and installation guide
+│   └── cognito-sso-setup.md  SAML / OIDC SSO configuration guide
 └── .env.local.example      Environment variable template for local dev
 ```
 
