@@ -1,5 +1,12 @@
 # Fulcrum GitHub Repository Activity
 
+[![Security Audit](https://github.com/srupke/Fulcrum.GitHub.RepositoryActivity/actions/workflows/security-audit.yml/badge.svg)](https://github.com/srupke/Fulcrum.GitHub.RepositoryActivity/actions/workflows/security-audit.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D20.19-brightgreen)](https://nodejs.org)
+[![Last Commit](https://img.shields.io/github/last-commit/srupke/Fulcrum.GitHub.RepositoryActivity)](https://github.com/srupke/Fulcrum.GitHub.RepositoryActivity/commits/main)
+[![Open Issues](https://img.shields.io/github/issues/srupke/Fulcrum.GitHub.RepositoryActivity)](https://github.com/srupke/Fulcrum.GitHub.RepositoryActivity/issues)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/srupke/Fulcrum.GitHub.RepositoryActivity/pulls)
+
 A web application for scanning GitHub organizations to identify repositories with recent commit activity on their default branch. Provides bulk actions: branch lock/unlock, branch creation, and CSV export.
 
 ## Architecture
