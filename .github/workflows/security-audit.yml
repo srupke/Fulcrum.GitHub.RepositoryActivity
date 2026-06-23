@@ -1,0 +1,90 @@
+name: Security Audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install lambda dependencies
+        run: npm ci
+        working-directory: lambda
+
+      - name: Audit frontend
+        id: audit_frontend
+        run: |
+          echo "## Frontend Audit" >> $GITHUB_STEP_SUMMARY
+          if npm audit --audit-level=high --json > audit-frontend.json 2>&1; then
+            echo "✅ No high or critical vulnerabilities found." >> $GITHUB_STEP_SUMMARY
+            echo "failed=false" >> $GITHUB_OUTPUT
+          else
+            echo "❌ High or critical vulnerabilities detected:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            npm audit --audit-level=high 2>&1 | tail -20 >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "failed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Audit lambda
+        id: audit_lambda
+        working-directory: lambda
+        run: |
+          echo "## Lambda Audit" >> $GITHUB_STEP_SUMMARY
+          if npm audit --audit-level=high --json > ../audit-lambda.json 2>&1; then
+            echo "✅ No high or critical vulnerabilities found." >> $GITHUB_STEP_SUMMARY
+            echo "failed=false" >> $GITHUB_OUTPUT
+          else
+            echo "❌ High or critical vulnerabilities detected:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            npm audit --audit-level=high 2>&1 | tail -20 >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "failed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post PR comment on failure
+        if: steps.audit_frontend.outputs.failed == 'true' || steps.audit_lambda.outputs.failed == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const lines = ['## Security Audit Failed', ''];
+            if ('${{ steps.audit_frontend.outputs.failed }}' === 'true') {
+              lines.push('❌ **Frontend** has high or critical vulnerabilities.');
+            }
+            if ('${{ steps.audit_lambda.outputs.failed }}' === 'true') {
+              lines.push('❌ **Lambda** has high or critical vulnerabilities.');
+            }
+            lines.push('');
+            lines.push('Run `npm audit` locally to see details, or `npm audit fix` to resolve.');
+            lines.push('If a fix requires a breaking change, pin to a safe version or open a follow-up issue.');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: lines.join('\n'),
+            });
+
+      - name: Fail if high vulnerabilities found
+        if: steps.audit_frontend.outputs.failed == 'true' || steps.audit_lambda.outputs.failed == 'true'
+        run: exit 1
