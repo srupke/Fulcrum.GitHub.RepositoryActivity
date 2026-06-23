@@ -72,6 +72,16 @@ function Die([string]$msg) { Write-Host "ERROR: $msg" -ForegroundColor Red; exit
 # ── 1. SAM build + deploy ──────────────────────────────────────────────────
 
 if (-not $SkipBuild) {
+  Log "Installing Lambda dependencies…"
+  Push-Location "$RepoRoot/lambda"
+  npm install
+  if ($LASTEXITCODE -ne 0) { Die "npm install in lambda/ failed." }
+  Pop-Location
+
+  # SAM's esbuild builder resolves esbuild via PATH; expose the local binary
+  $LambdaNodeBin = Join-Path $RepoRoot 'lambda\node_modules\.bin'
+  $env:PATH = "$LambdaNodeBin;$env:PATH"
+
   Log "Building Lambda (SAM + esbuild)…"
   Push-Location $ScriptDir
   sam build --template template.yml
