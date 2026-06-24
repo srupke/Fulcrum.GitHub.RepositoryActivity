@@ -10,6 +10,7 @@ interface AppProps {
 export default function App({ isMock }: AppProps) {
   const [authenticated, setAuthenticated] = useState<boolean | null>(isMock ? true : null);
   const [userEmail, setUserEmail] = useState<string>('');
+  const [signingOut, setSigningOut] = useState(false);
 
   useEffect(() => {
     if (isMock) {
@@ -59,7 +60,15 @@ export default function App({ isMock }: AppProps) {
 
   const handleSignOut = async () => {
     if (isMock) return;
-    await signOut();
+    setSigningOut(true);
+    try {
+      await signOut();
+    } catch {
+      // signOut threw before it could redirect — clear storage and reload
+      localStorage.clear();
+      sessionStorage.clear();
+      window.location.replace('/');
+    }
   };
 
   if (authenticated === null) {
@@ -77,10 +86,12 @@ export default function App({ isMock }: AppProps) {
   }
 
   if (!authenticated) {
+    // Don't call signInWithRedirect while the signOut redirect is still in
+    // flight — Amplify fires signedOut synchronously before it navigates to
+    // the Cognito logout endpoint, so without this guard the sign-in redirect
+    // would race against and overwrite the logout redirect.
     const hasCode = new URLSearchParams(window.location.search).has('code');
-    if (!hasCode) {
-      signInWithRedirect();
-    }
+    if (!hasCode && !signingOut) signInWithRedirect();
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="flex items-center gap-3 text-gray-500">
