@@ -24,9 +24,10 @@ Parameters:
     Type: String
     Default: ''
     Description: >
-      ARN of an ACM certificate in us-east-1 for the CustomDomain.
-      CloudFront requires the certificate to be in us-east-1.
-      Create it manually in that region, then pass the ARN here.
+      ARN of an existing ACM certificate in us-east-1 for the CustomDomain.
+      Leave blank when HostedZoneId is provided — the stack will create and
+      DNS-validate a certificate automatically. Only supply this when you want
+      to bring your own pre-existing certificate.
 
   GitHubAppId:
     Type: String
@@ -101,7 +102,18 @@ Conditions:
     !And
       - !Condition HasCustomDomain
       - !Not [!Equals [!Ref HostedZoneId, '']]
-  HasCertificate: !Not [!Equals [!Ref AcmCertificateArn, '']]
+  # True when the caller supplies an existing cert ARN
+  HasExistingCertificate: !Not [!Equals [!Ref AcmCertificateArn, '']]
+  # True when we should create a cert: custom domain + hosted zone + no BYO cert
+  CreateCertificate:
+    !And
+      - !Condition HasHostedZone
+      - !Equals [!Ref AcmCertificateArn, '']
+  # True when a cert is available (either created or supplied)
+  HasCertificate:
+    !Or
+      - !Condition HasExistingCertificate
+      - !Condition CreateCertificate
   HasSamlProvider: !Not [!Equals [!Ref SamlMetadataUrl, '']]
   HasOidcProvider: !Not [!Equals [!Ref OidcIssuerUrl, '']]
 
@@ -126,6 +138,18 @@ Resources:
       Name: !Sub '/${AppName}/github-app'
       Description: GitHub App credentials — appId (string) + privateKey (PEM with \n escaped)
       SecretString: !Sub '{"appId":"${GitHubAppId}","privateKey":"${GitHubAppPrivateKey}"}'
+
+  # ── ACM Certificate (auto-created when HostedZoneId is set) ──────────────
+
+  AcmCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Condition: CreateCertificate
+    Properties:
+      DomainName: !Ref CustomDomain
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref CustomDomain
+          HostedZoneId: !Ref HostedZoneId
 
   # ── Cognito User Pool ─────────────────────────────────────────────────────
 
@@ -408,7 +432,10 @@ Resources:
 
         ViewerCertificate: !If
           - HasCertificate
-          - AcmCertificateArn: !Ref AcmCertificateArn
+          - AcmCertificateArn: !If
+              - CreateCertificate
+              - !Ref AcmCertificate
+              - !Ref AcmCertificateArn
             SslSupportMethod: sni-only
             MinimumProtocolVersion: TLSv1.2_2021
           - CloudFrontDefaultCertificate: true

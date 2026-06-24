@@ -23,7 +23,9 @@
   Route 53 Hosted Zone ID. Required when CustomDomain is provided.
 
 .PARAMETER AcmCertificateArn
-  ACM certificate ARN in us-east-1 for the custom domain. Required when CustomDomain is set.
+  ARN of an existing ACM certificate in us-east-1 for the custom domain.
+  Leave blank when HostedZoneId is provided - the stack will create and
+  DNS-validate a certificate automatically via Route 53.
 
 .PARAMETER AwsRegion
   AWS region to deploy into. Default: us-east-1
@@ -32,7 +34,10 @@
   Skip the SAM build + deploy step (re-use existing stack, just redeploy the SPA).
 
 .EXAMPLE
-  # First deploy with custom domain
+  # First deploy with custom domain (certificate created automatically)
+  .\deploy.ps1 -GitHubAppId 12345 -CustomDomain repo.example.com -HostedZoneId ZXYZ
+
+  # First deploy with a pre-existing certificate (BYO cert)
   .\deploy.ps1 -GitHubAppId 12345 -CustomDomain repo.example.com -HostedZoneId ZXYZ -AcmCertificateArn arn:aws:acm:us-east-1:...
 
   # Redeploy SPA only (faster iteration)
@@ -113,6 +118,17 @@ if (-not $SkipBuild) {
     $params += "OidcIssuerUrl=$OidcIssuerUrl"
     $params += "OidcClientId=$OidcClientId"
     $params += "OidcClientSecret=$OidcClientSecret"
+  }
+
+  # A ROLLBACK_COMPLETE stack cannot be updated - delete it first.
+  $stackStatus = aws cloudformation describe-stacks --stack-name $AppName --region $AwsRegion --query "Stacks[0].StackStatus" --output text 2>$null
+  if ($stackStatus -eq 'ROLLBACK_COMPLETE') {
+    Log "Stack '$AppName' is in ROLLBACK_COMPLETE state - deleting before redeploy..."
+    aws cloudformation delete-stack --stack-name $AppName --region $AwsRegion
+    if ($LASTEXITCODE -ne 0) { Die "Failed to initiate stack deletion." }
+    aws cloudformation wait stack-delete-complete --stack-name $AppName --region $AwsRegion
+    if ($LASTEXITCODE -ne 0) { Die "Stack deletion did not complete successfully." }
+    Log "Stack deleted. Proceeding with fresh deploy..."
   }
 
   Log "Deploying CloudFormation stack '$AppName'…"
@@ -205,7 +221,10 @@ Write-Host "Deploy complete!" -ForegroundColor Green
 Write-Host "  $SiteUrl" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow
-Write-Host "  1. If you used PLACEHOLDER for the GitHub App private key, update the secret:"
-Write-Host "     aws secretsmanager put-secret-value --secret-id '/$AppName/github-app' --secret-string '{""appId"":""YOUR_ID"",""privateKey"":""-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----""}'"
+Write-Host "  1. If you used PLACEHOLDER for the GitHub App private key, update the secret via file"
+Write-Host "     (direct --secret-string quoting is fragile in PowerShell and can corrupt the JSON):"
+Write-Host "     `$json = '{""appId"":""YOUR_APP_ID"",""privateKey"":""-----BEGIN RSA PRIVATE KEY-----\nMII...\n-----END RSA PRIVATE KEY-----""}'"
+Write-Host "     [System.IO.File]::WriteAllText('C:\Temp\gh.json', `$json, (New-Object System.Text.UTF8Encoding `$false))"
+Write-Host "     aws secretsmanager put-secret-value --secret-id '/$AppName/github-app' --secret-string file://C:\Temp\gh.json"
 Write-Host "  2. Create Cognito users: aws cognito-idp admin-create-user --user-pool-id $UserPoolId --username user@example.com"
 Write-Host "  3. Install the GitHub App on your organization(s): see infra/github-app-setup.md"

@@ -77,11 +77,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     if (method === 'GET' && path === '/api/repos') {
       if (!q.org) return err(400, 'org is required');
       const octokit = await getOctokit(q.org);
-      const repos = await octokit.paginate(octokit.rest.repos.listForOrg, {
-        org: q.org,
-        type: 'all',
-        per_page: 100,
-      });
+      const repos = await octokit.paginate(octokit.rest.apps.listReposAccessibleToInstallation, { per_page: 100 });
       return ok(repos.map(r => ({
         id: r.id,
         name: r.name,
@@ -207,6 +203,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     return err(404, 'Not Found');
   } catch (e: any) {
     console.error('[handler]', e);
-    return err(e.status ?? 500, e.message ?? 'Internal Server Error');
+    // Never return 403 or 404 — CloudFront converts those to the SPA index page.
+    // Map upstream 403/404 to 400 so the real error reaches the browser.
+    const status = (e.status === 403 || e.status === 404) ? 400 : (e.status ?? 500);
+    return err(status, e.message ?? 'Internal Server Error');
   }
 };

@@ -1,6 +1,6 @@
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { App } from '@octokit/app';
-import type { Octokit } from '@octokit/core';
+import { Octokit } from '@octokit/rest';
 
 interface GitHubAppSecret {
   appId: string;
@@ -28,8 +28,26 @@ async function getApp(): Promise<App> {
 
 export async function getOctokit(org: string): Promise<Octokit> {
   const app = await getApp();
-  const { data: installation } = await app.octokit.request('GET /orgs/{org}/installation', { org });
-  return app.getInstallationOctokit(installation.id);
+
+  let installationId: number;
+  try {
+    const { data } = await app.octokit.request('GET /orgs/{org}/installation', { org });
+    installationId = data.id;
+  } catch (e: any) {
+    if (e.status !== 404) throw e;
+    // Personal account — fall back to user installation endpoint
+    const { data } = await app.octokit.request('GET /users/{username}/installation', { username: org });
+    installationId = data.id;
+  }
+
+  // Exchange installation ID for a short-lived token via the app auth strategy,
+  // then create a full @octokit/rest instance (includes rest.* and paginate).
+  const { token } = await (app.octokit as any).auth({
+    type: 'installation',
+    installationId,
+  }) as { token: string };
+
+  return new Octokit({ auth: token });
 }
 
 export interface InstallationOrg {

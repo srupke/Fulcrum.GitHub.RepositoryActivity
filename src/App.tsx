@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getCurrentUser, signInWithRedirect, signOut } from 'aws-amplify/auth';
+import { getCurrentUser, fetchAuthSession, signInWithRedirect, signOut } from 'aws-amplify/auth';
 import { Hub as AmplifyHub } from 'aws-amplify/utils';
 import ActivityHub from './hub/Hub';
 
@@ -18,12 +18,20 @@ export default function App({ isMock }: AppProps) {
     }
 
     const checkAuth = async () => {
+      let user;
       try {
-        const user = await getCurrentUser();
-        setUserEmail(user.signInDetails?.loginId ?? user.username);
-        setAuthenticated(true);
+        user = await getCurrentUser();
       } catch {
         setAuthenticated(false);
+        return;
+      }
+      setAuthenticated(true);
+      try {
+        const session = await fetchAuthSession();
+        const email = session.tokens?.idToken?.payload?.email as string | undefined;
+        setUserEmail(email ?? user.signInDetails?.loginId ?? user.username);
+      } catch {
+        setUserEmail(user.signInDetails?.loginId ?? user.username);
       }
     };
 
@@ -31,9 +39,15 @@ export default function App({ isMock }: AppProps) {
 
     const listener = AmplifyHub.listen('auth', ({ payload }) => {
       if (payload.event === 'signedIn') {
-        getCurrentUser().then(u => {
-          setUserEmail(u.signInDetails?.loginId ?? u.username);
+        getCurrentUser().then(async u => {
           setAuthenticated(true);
+          try {
+            const session = await fetchAuthSession();
+            const email = session.tokens?.idToken?.payload?.email as string | undefined;
+            setUserEmail(email ?? u.signInDetails?.loginId ?? u.username);
+          } catch {
+            setUserEmail(u.signInDetails?.loginId ?? u.username);
+          }
         });
       } else if (payload.event === 'signedOut') {
         setAuthenticated(false);
